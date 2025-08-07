@@ -21,9 +21,7 @@ import yaml
 import prometheus_client
 import customtkinter as ctk
 import tkinter as tk
-from tenacity import (
-    AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
-)
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -32,8 +30,6 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from plotly.io import to_image
 from openai import OpenAI
-
-# ─── Configuration ─────────────────────────────────────────────────────────────
 
 try:
     MASTER_PASSWORD  = os.environ["MASTER_PASSWORD"].encode()
@@ -45,8 +41,6 @@ except KeyError as e:
     print(f"Missing required env var: {e.args[0]}", file=sys.stderr)
     sys.exit(1)
 
-# ─── Load agent definitions ────────────────────────────────────────────────────
-
 @dataclass
 class AgentConfig:
     name: str
@@ -55,28 +49,16 @@ class AgentConfig:
 
 with open(AGENTS_FILE, "r") as f:
     agents_yaml = yaml.safe_load(f)
-AGENTS: List[AgentConfig] = [
-    AgentConfig(**agent) for agent in agents_yaml.get("agents", [])
-]
+AGENTS: List[AgentConfig] = [AgentConfig(**agent) for agent in agents_yaml.get("agents", [])]
 
-# ─── Logging & Metrics ─────────────────────────────────────────────────────────
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-REQUEST_TIME = prometheus_client.Summary(
-    "debate_request_seconds", "Time spent in debate analysis"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+REQUEST_TIME = prometheus_client.Summary("debate_request_seconds", "Time spent in debate analysis")
 prometheus_client.start_http_server(8000)
 
-# ─── Encryption Key Management ─────────────────────────────────────────────────
-
 BACKUP_PATH = Path("aes_key_backup.bin")
-USAGE_ROTATE_THRESHOLD      = 20
+USAGE_ROTATE_THRESHOLD = 20
 TIME_ROTATE_THRESHOLD_HOURS = 24
-MAX_KEYS                    = 3
+MAX_KEYS = 3
 
 class KeyManager:
     def __init__(self, backup_path: Path = BACKUP_PATH):
@@ -90,12 +72,7 @@ class KeyManager:
         self._load_or_init()
 
     def _derive_backup_key(self) -> bytes:
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=self.salt,
-            iterations=200_000,
-        )
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.salt, iterations=200_000)
         return kdf.derive(MASTER_PASSWORD)
 
     def _load_or_init(self):
@@ -110,8 +87,8 @@ class KeyManager:
             obj = json.loads(plain.decode())
             for kid, b64 in obj["keys"].items():
                 self.keys[kid] = base64.b64decode(b64)
-            self.current_id    = obj["current_id"]
-            self.usage_count   = obj.get("usage_count", 0)
+            self.current_id = obj["current_id"]
+            self.usage_count = obj.get("usage_count", 0)
             self.last_rotation = datetime.fromisoformat(obj["last_rotation"])
             logging.info(f"Loaded {len(self.keys)} keys; current_id={self.current_id}")
         else:
@@ -120,15 +97,15 @@ class KeyManager:
 
     def _save_backup(self):
         obj = {
-            "keys":          {kid: base64.b64encode(k).decode() for kid, k in self.keys.items()},
-            "current_id":    self.current_id,
-            "usage_count":   self.usage_count,
+            "keys": {kid: base64.b64encode(k).decode() for kid, k in self.keys.items()},
+            "current_id": self.current_id,
+            "usage_count": self.usage_count,
             "last_rotation": self.last_rotation.isoformat(),
         }
-        plain    = json.dumps(obj).encode()
-        kdf_key  = self._derive_backup_key()
-        nonce    = os.urandom(12)
-        ct       = AESGCM(kdf_key).encrypt(nonce, plain, None)
+        plain = json.dumps(obj).encode()
+        kdf_key = self._derive_backup_key()
+        nonce = os.urandom(12)
+        ct = AESGCM(kdf_key).encrypt(nonce, plain, None)
         self.backup_path.write_bytes(self.salt + nonce + ct)
         self.backup_path.chmod(0o600)
 
@@ -137,18 +114,17 @@ class KeyManager:
             return
         for old in sorted(self.keys)[:len(self.keys) - MAX_KEYS]:
             del self.keys[old]
-            logging.debug(f"Pruned key {old}")
 
     def _rotate_key(self, first=False):
         new_key = os.urandom(32)
         if not first and self.current_id:
-            prev    = self.keys[self.current_id]
+            prev = self.keys[self.current_id]
             new_key = bytes(a ^ b for a, b in zip(new_key, prev))
         kid = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        self.keys[kid]      = new_key
-        self.current_id     = kid
-        self.usage_count    = 0
-        self.last_rotation  = datetime.utcnow()
+        self.keys[kid] = new_key
+        self.current_id = kid
+        self.usage_count = 0
+        self.last_rotation = datetime.utcnow()
         self._prune_old_keys()
         self._save_backup()
         logging.info(f"Rotated key → {kid}")
@@ -156,10 +132,7 @@ class KeyManager:
     def maybe_rotate(self):
         with self._lock:
             now = datetime.utcnow()
-            if (
-                self.usage_count >= USAGE_ROTATE_THRESHOLD
-                or (now - self.last_rotation) >= timedelta(hours=TIME_ROTATE_THRESHOLD_HOURS)
-            ):
+            if self.usage_count >= USAGE_ROTATE_THRESHOLD or (now - self.last_rotation) >= timedelta(hours=TIME_ROTATE_THRESHOLD_HOURS):
                 self._rotate_key()
             else:
                 self._save_backup()
@@ -174,38 +147,27 @@ key_manager = KeyManager()
 
 def encrypt_txt(plain: str) -> str:
     kid, key = key_manager.get_current_key()
-    aes       = AESGCM(key)
-    nonce     = os.urandom(12)
-    ct        = aes.encrypt(nonce, plain.encode(), None)
-    payload   = {
-        "key_id": kid,
-        "nonce":   base64.b64encode(nonce).decode(),
-        "ct":      base64.b64encode(ct).decode()
-    }
+    aes = AESGCM(key)
+    nonce = os.urandom(12)
+    ct = aes.encrypt(nonce, plain.encode(), None)
+    payload = {"key_id": kid, "nonce": base64.b64encode(nonce).decode(), "ct": base64.b64encode(ct).decode()}
     key_manager.usage_count += 1
     key_manager.maybe_rotate()
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 def decrypt_txt(token: str) -> str:
-    p      = json.loads(base64.b64decode(token).decode())
-    key    = key_manager.get_key(p["key_id"])
+    p = json.loads(base64.b64decode(token).decode())
+    key = key_manager.get_key(p["key_id"])
     if not key:
         raise ValueError(f"Key {p['key_id']} not found")
-    aes    = AESGCM(key)
-    nonce  = base64.b64decode(p["nonce"])
-    ct     = base64.b64decode(p["ct"])
+    aes = AESGCM(key)
+    nonce = base64.b64decode(p["nonce"])
+    ct = base64.b64decode(p["ct"])
     return aes.decrypt(nonce, ct, None).decode()
-
-
-# ─── Storage & Embedding with Bleach Sanitization ──────────────────────────────
 
 class StorageManager:
     DB_PATH = Path("storage.db")
-    W_CLIENT = weaviate.Client(
-        url=WEAVIATE_URL,
-        auth_client_secret=weaviate.AuthApiKey(api_key=WEAVIATE_API_KEY),
-        additional_headers={"X-OpenAI-Api-Key": OPENAI_KEY}
-    )
+    W_CLIENT = weaviate.Client(url=WEAVIATE_URL, auth_client_secret=weaviate.AuthApiKey(api_key=WEAVIATE_API_KEY), additional_headers={"X-OpenAI-Api-Key": OPENAI_KEY})
     EMB_MODEL = "text-embedding-ada-002"
 
     @classmethod
@@ -224,56 +186,33 @@ class StorageManager:
                     data_json TEXT NOT NULL,
                     PRIMARY KEY (product_id, granularity)
                 );
-                """)
+            """)
             await db.commit()
-        # ensure weaviate schema
         classes = [c["class"] for c in cls.W_CLIENT.schema.get()["classes"]]
         if "Context" not in classes:
-            cls.W_CLIENT.schema.create_class({
-                "class": "Context",
-                "properties": [
-                    {"name": "timestamp", "dataType": ["date"]},
-                    {"name": "content",   "dataType": ["text"]}
-                ]
-            })
+            cls.W_CLIENT.schema.create_class({"class": "Context", "properties": [{"name": "timestamp", "dataType": ["date"]}, {"name": "content", "dataType": ["text"]}]})
 
     @classmethod
     async def save_context(cls, content: str):
         clean_content = bleach.clean(content)
         ts = datetime.utcnow().isoformat()
-        # SQLite
         async with aiosqlite.connect(cls.DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO context(timestamp,content) VALUES (?,?)",
-                (ts, clean_content)
-            )
+            await db.execute("INSERT INTO context(timestamp,content) VALUES (?,?)", (ts, clean_content))
             await db.commit()
-        # Weaviate with embeddings
-        embedding = OpenAI(api_key=OPENAI_KEY).embeddings.create(
-            model=cls.EMB_MODEL, input=[clean_content]
-        ).data[0].embedding
-        cls.W_CLIENT.data_object.create(
-            {"timestamp": ts, "content": clean_content},
-            "Context",
-            vector=embedding
-        )
+        embedding = OpenAI(api_key=OPENAI_KEY).embeddings.create(model=cls.EMB_MODEL, input=[clean_content]).data[0].embedding
+        cls.W_CLIENT.data_object.create({"timestamp": ts, "content": clean_content}, "Context", vector=embedding)
 
     @classmethod
     async def recent_contexts(cls, limit: int = 5) -> List[str]:
         async with aiosqlite.connect(cls.DB_PATH) as db:
-            cur = await db.execute(
-                "SELECT content FROM context ORDER BY id DESC LIMIT ?", (limit,)
-            )
+            cur = await db.execute("SELECT content FROM context ORDER BY id DESC LIMIT ?", (limit,))
             rows = await cur.fetchall()
             return [r[0] for r in rows]
 
     @classmethod
     async def get_cached_ohlc(cls, product_id: str, gran_sec: int) -> Optional[pd.DataFrame]:
         async with aiosqlite.connect(cls.DB_PATH) as db:
-            cur = await db.execute(
-                "SELECT fetched_at, data_json FROM ohlc_cache WHERE product_id=? AND granularity=?",
-                (product_id, gran_sec)
-            )
+            cur = await db.execute("SELECT fetched_at, data_json FROM ohlc_cache WHERE product_id=? AND granularity=?", (product_id, gran_sec))
             row = await cur.fetchone()
             if not row:
                 return None
@@ -296,21 +235,15 @@ class StorageManager:
             """, (product_id, gran_sec, ts, js))
             await db.commit()
 
-
-# ─── Data Fetching with SQLite Cache ──────────────────────────────────────────
-
 async def fetch_ohlc(product_id="ETH-USD", gran_sec=4*3600) -> pd.DataFrame:
     cached = await StorageManager.get_cached_ohlc(product_id, gran_sec)
     if cached is not None:
         return cached
-    now   = datetime.utcnow()
+    now = datetime.utcnow()
     start = now - timedelta(seconds=gran_sec * 50)
     params = {"start": start.isoformat(), "end": now.isoformat(), "granularity": gran_sec}
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"https://api.exchange.coinbase.com/products/{product_id}/candles",
-            params=params
-        )
+        resp = await client.get(f"https://api.exchange.coinbase.com/products/{product_id}/candles", params=params)
         resp.raise_for_status()
         data = resp.json()
     df = pd.DataFrame(data, columns=["time","low","high","open","close","volume"])
@@ -318,8 +251,9 @@ async def fetch_ohlc(product_id="ETH-USD", gran_sec=4*3600) -> pd.DataFrame:
     await StorageManager.cache_ohlc(product_id, gran_sec, df)
     return df.sort_values("time")
 
+def image_to_base64(img_bytes: bytes) -> str:
+    return base64.b64encode(img_bytes).decode('ascii')
 
-# ─── Prompt Builder ────────────────────────────────────────────────────────────
 def build_hypertime_debate_prompts(chart_b64: str, market_context: str) -> List[Dict]:
     return [
         {
@@ -411,17 +345,11 @@ def build_hypertime_debate_prompts(chart_b64: str, market_context: str) -> List[
         {"role": "user", "content": "CONSENSUS SYNTHESIS: Merge revised outputs into one directive (LONG/SHORT/NEUTRAL) with ≥5 technical bullets, confidence %, and hypertime risk matrix. Enclose within [replytemplate] tags."}
     ]
 
-
 @REQUEST_TIME.time()
 async def debate_and_consensus(chart_b64: str, market_ctx: str) -> str:
     prompts = build_hypertime_debate_prompts(chart_b64, market_ctx)
     client = OpenAI(api_key=OPENAI_KEY)
-    resp = await client.chat.completions.create_async(
-        model="gpt-5",
-        messages=prompts,
-        max_tokens=32000,
-        stream=True
-    )
+    resp = await client.chat.completions.create_async(model="gpt-4o-mini", messages=prompts, max_tokens=32000, stream=True)
     collected = ""
     async for chunk in resp:
         delta = chunk.choices[0].delta.get("content")
@@ -429,36 +357,26 @@ async def debate_and_consensus(chart_b64: str, market_ctx: str) -> str:
             collected += delta
     return collected
 
-
-# ─── Dashboard / UI with Streaming ───────────────────────────────────────────
-
 class AdvancedDashboard(ctk.CTk):
     def __init__(self, loop: asyncio.AbstractEventLoop):
         super().__init__()
         self.loop = loop
-        self.title("GPT-5 Hypertime Mesh Consensus")
+        self.title("Hypertime Mesh Consensus")
         self.geometry("1280x1100")
         self.configure(padx=20, pady=20)
-
         asyncio.run_coroutine_threadsafe(StorageManager.init_db(), loop)
-
         ctrl = ctk.CTkFrame(self); ctrl.pack(fill="x", pady=(0,10))
-        self.sym  = ctk.StringVar(value="ETH-USD")
+        self.sym = ctk.StringVar(value="ETH-USD")
         self.gran = ctk.StringVar(value="4h")
-        ctk.CTkOptionMenu(ctrl, variable=self.sym,  values=["ETH-USD","BTC-USD","SOL-USD"]).grid(row=0,col=0,padx=5)
+        ctk.CTkOptionMenu(ctrl, variable=self.sym, values=["ETH-USD","BTC-USD","SOL-USD"]).grid(row=0,col=0,padx=5)
         ctk.CTkOptionMenu(ctrl, variable=self.gran, values=["4h","5h"]).grid(row=0,col=1,padx=5)
         ctk.CTkButton(ctrl, text="Refresh", command=lambda: self.schedule(True)).grid(row=0,col=2,padx=5)
-
-        self.chart_lbl = ctk.CTkLabel(self, text="")
-        self.chart_lbl.pack(pady=10)
+        self.chart_lbl = ctk.CTkLabel(self, text=""); self.chart_lbl.pack(pady=10)
         self.txt = ctk.CTkTextbox(self, width=1200, height=460, font=("Consolas",13), wrap="word")
-        self.txt.configure(border_color="#444444", fg_color="#222222")
-        self.txt.pack(pady=10)
-        self.status = ctk.CTkLabel(self, text="Ready", text_color="gray")
-        self.status.pack(pady=5)
-
+        self.txt.configure(border_color="#444444", fg_color="#222222"); self.txt.pack(pady=10)
+        self.status = ctk.CTkLabel(self, text="Ready", text_color="gray"); self.status.pack(pady=5)
         self.after(1000, lambda: self.schedule(False))
-        self.after(180_000, lambda: self.schedule(False))
+        self.after(180000, lambda: self.schedule(False))
 
     def schedule(self, force: bool):
         self.status.configure(text="Scheduling update…")
@@ -474,61 +392,33 @@ class AdvancedDashboard(ctk.CTk):
     async def _update(self, force: bool):
         self.status.configure(text="Fetching OHLC…")
         pid, gran = self.sym.get(), self.gran.get()
-        gran_s     = 4*3600 if gran=="4h" else 5*3600
+        gran_s = 4*3600 if gran=="4h" else 5*3600
         df = await fetch_ohlc(pid, gran_s)
         df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
-
         fig = make_subplots(rows=1, cols=1)
-        fig.add_trace(go.Candlestick(
-            x=df["time"], open=df["open"], high=df["high"],
-            low=df["low"], close=df["close"],
-            increasing_line_color="yellow", decreasing_line_color="white",
-            increasing_line_width=1.5, decreasing_line_width=1.5
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=df["time"], y=df["ema20"], name="EMA20", line=dict(width=2)
-        ), row=1, col=1)
-        fig.update_layout(
-            template="plotly_dark", height=600,
-            margin=dict(l=40,r=40,t=60,b=40),
-            title=dict(text=f"{pid} {gran.upper()} Candles", x=0.5),
-            xaxis=dict(gridcolor="gray",gridwidth=0.2,title="Time"),
-            yaxis=dict(gridcolor="gray",gridwidth=0.2,title="Price (USD)")
-        )
-
+        fig.add_trace(go.Candlestick(x=df["time"], open=df["open"], high=df["high"], low=df["low"], close=df["close"], increasing_line_color="yellow", decreasing_line_color="white", increasing_line_width=1.5, decreasing_line_width=1.5), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["time"], y=df["ema20"], name="EMA20", line=dict(width=2)), row=1, col=1)
+        fig.update_layout(template="plotly_dark", height=600, margin=dict(l=40,r=40,t=60,b=40), title=dict(text=f"{pid} {gran.upper()} Candles", x=0.5), xaxis=dict(gridcolor="gray",gridwidth=0.2,title="Time"), yaxis=dict(gridcolor="gray",gridwidth=0.2,title="Price (USD")))
         img = to_image(fig, format="png")
         b64 = image_to_base64(img)
-        photo = tk.PhotoImage(data=b64, format="png")
+        photo = tk.PhotoImage(data=b64)
         chart_img = ctk.CTkImage(light_image=photo, size=(1200,600))
-        self.chart_lbl.configure(image=chart_img)
-        self.chart_lbl.image = chart_img
-
+        self.chart_lbl.configure(image=chart_img); self.chart_lbl.image = chart_img
         last = df["close"].iloc[-1]
-        ctx  = f"{pid}=${last:.2f}, Range {df['low'].min():.2f}-{df['high'].max():.2f} {gran.upper()}"
-
+        ctx = f"{pid}=${last:.2f}, Range {df['low'].min():.2f}-{df['high'].max():.2f} {gran.upper()}"
         await StorageManager.save_context(ctx)
         recent = await StorageManager.recent_contexts()
-
-        # Weaviate query for semantic contexts
-        sem = StorageManager.W_CLIENT.query.get("Context", ["content"]) \
-            .with_hybrid(query=bleach.clean(ctx), alpha=0.5) \
-            .with_limit(5).do()
+        sem = StorageManager.W_CLIENT.query.get("Context", ["content"]).with_hybrid(query=bleach.clean(ctx), alpha=0.5).with_limit(5).do()
         past_ctx = recent + [o["content"] for o in sem["data"]["Get"]["Context"]]
-
         self.status.configure(text="Running hypertime mesh debate…")
         result = await debate_and_consensus(b64, ctx)
-
         if "[replytemplate]" in result and "[/replytemplate]" in result:
-            start = result.index("[replytemplate]") + len("[replytemplate]")
-            end   = result.index("[/replytemplate]")
-            out   = result[start:end].strip()
+            start = result.index("[replytemplate]") + len("[replytemplate]"); end = result.index("[/replytemplate]")
+            out = result[start:end].strip()
         else:
             out = (result[:9000] + "...\n[Truncated]") if len(result) > 9000 else result
-
-        self.txt.delete("0.0","end")
-        self.txt.insert("0.0", out)
+        self.txt.delete("0.0","end"); self.txt.insert("0.0", out)
         self.status.configure(text="Complete.")
-
 
 def main():
     loop = asyncio.new_event_loop()
@@ -536,7 +426,6 @@ def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("green")
     AdvancedDashboard(loop).mainloop()
-
 
 if __name__ == "__main__":
     main()
