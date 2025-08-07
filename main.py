@@ -303,7 +303,7 @@ async def gpt4o_vision_debate_analysis(image_b64: str, market_context: str) -> s
     client = OpenAI(api_key=OPENAI_KEY)
     messages = build_hypertime_debate_prompts(image_b64, market_context)
     resp = await client.chat.completions.create_async(
-        model="gpt-4o", messages=messages, max_tokens=32000
+        model="gpt-5", messages=messages, max_tokens=32000
     )
     return resp.choices[0].message.content
 
